@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Remote Viewing Cryptography Demo (JS Version)</title>
+<style>
+  body {
+    margin: 0;
+    background: #000;
+    overflow: hidden;
+  }
+  canvas {
+    display: block;
+    margin: 0 auto;
+    background: #000;
+  }
+</style>
+</head>
+<body>
+<canvas id="gameCanvas"></canvas>
+<script>
+// ----------------------
+// Configuration & Globals
+// ----------------------
+let GRID_ROWS = 10;
+let GRID_COLS = 10;
+const CELL_SIZE = 60;
+const TOP_BAR_HEIGHT = 60;
+const BOTTOM_BAR_HEIGHT = 60;
+let FONT_NORMAL_SIZE = 24;
+let FONT_NEIGHBOR_SIZE = 36;
+let FONT_HOVER_SIZE = 48;
+let animation_speed = 0.2; // How fast font sizes interpolate
+
+let total_score = 0;
+let clicked = false;
+let score = null;
+let hovered_cell = null;
+
+let target_row = 0;
+let target_col = 0;
+let target_value = 0;
+
+let grid = [];
+let cell_states = {};
+
+let canvas = document.getElementById("gameCanvas");
+let ctx = canvas.getContext("2d");
+
+function calcScreenDimensions(cols) {
+  let width = cols * CELL_SIZE;
+  let height = (GRID_ROWS * CELL_SIZE) + TOP_BAR_HEIGHT + BOTTOM_BAR_HEIGHT;
+  return {width, height};
+}
+
+// Initialize canvas size
+let {width: SCREEN_WIDTH, height: SCREEN_HEIGHT} = calcScreenDimensions(GRID_COLS);
+canvas.width = SCREEN_WIDTH;
+canvas.height = SCREEN_HEIGHT;
+
+function generate_new_round(rows, cols) {
+  let new_grid = [];
+  for (let r = 0; r < rows; r++) {
+    let row = [];
+    for (let c = 0; c < cols; c++) {
+      row.push(Math.floor(Math.random() * 10));
+    }
+    new_grid.push(row);
+  }
+  let t_row = Math.floor(Math.random() * rows);
+  let t_col = Math.floor(Math.random() * cols);
+  let t_val = new_grid[t_row][t_col];
+  return {new_grid, t_row, t_col, t_val};
+}
+
+function reset_cell_states(rows, cols) {
+  let states = {};
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      states[`${r},${c}`] = {current_size: FONT_NORMAL_SIZE};
+    }
+  }
+  return states;
+}
+
+function is_adjacent_or_same(r_guess, c_guess, r_target, c_target) {
+  if (r_guess === r_target && c_guess === c_target) return 3;
+  if (Math.abs(r_guess - r_target) <= 1 && Math.abs(c_guess - c_target) <= 1) return 1;
+  return 0;
+}
+
+function get_target_size(r, c, hovered) {
+  if (!hovered) return FONT_NORMAL_SIZE;
+  let [hr, hc] = hovered;
+  if (r === hr && c === hc) return FONT_HOVER_SIZE;
+  if (Math.abs(r - hr) <= 1 && Math.abs(c - hc) <= 1) return FONT_NEIGHBOR_SIZE;
+  return FONT_NORMAL_SIZE;
+}
+
+function initRound() {
+  let result = generate_new_round(GRID_ROWS, GRID_COLS);
+  grid = result.new_grid;
+  target_row = result.t_row;
+  target_col = result.t_col;
+  target_value = result.t_val;
+  cell_states = reset_cell_states(GRID_ROWS, GRID_COLS);
+  clicked = false;
+  score = null;
+  hovered_cell = null;
+}
+
+initRound();
+
+// UI elements positions will be recalculated each frame.
+// We'll store them after drawing so we know where to check mouse clicks.
+let top_bar_buttons = {};
+let reset_button_rect = null;
+
+function draw_top_bar() {
+  ctx.fillStyle = "rgb(50,50,50)";
+  ctx.fillRect(0, 0, SCREEN_WIDTH, TOP_BAR_HEIGHT);
+
+  // Score text
+  ctx.fillStyle = "white";
+  ctx.font = "32px sans-serif";
+  let score_text = `Total Score: ${total_score}`;
+  ctx.textBaseline = "middle";
+  ctx.textAlign = "left";
+  ctx.fillText(score_text, 10, TOP_BAR_HEIGHT/2);
+
+  // Compute sizes for buttons
+  let scoreTextWidth = ctx.measureText(score_text).width;
+  let reset_score_button_width = 120;
+  let reset_score_button_height = 40;
+  let reset_score_button_x = 10 + scoreTextWidth + 20;
+  let reset_score_button_y = (TOP_BAR_HEIGHT - reset_score_button_height)/2;
+
+  // Reset Score button
+  ctx.fillStyle = "rgb(200,200,200)";
+  ctx.fillRect(reset_score_button_x, reset_score_button_y, reset_score_button_width, reset_score_button_height);
+  ctx.fillStyle = "black";
+  ctx.font = "18px sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText("Reset Score", reset_score_button_x + reset_score_button_width/2, reset_score_button_y + reset_score_button_height/2);
+
+  // STD | WIDE buttons on right side
+  let mode_button_height = 40;
+  let mode_button_width = 80;
+  let wide_button_x = SCREEN_WIDTH - mode_button_width - 10;
+  let wide_button_y = (TOP_BAR_HEIGHT - mode_button_height) / 2;
+
+  ctx.fillStyle = "rgb(200,200,200)";
+  ctx.fillRect(wide_button_x, wide_button_y, mode_button_width, mode_button_height);
+  ctx.fillStyle = "black";
+  ctx.fillText("WIDE", wide_button_x + mode_button_width/2, wide_button_y + mode_button_height/2);
+
+  let standard_button_x = wide_button_x - mode_button_width - 10;
+  let standard_button_y = wide_button_y;
+
+  ctx.fillStyle = "rgb(200,200,200)";
+  ctx.fillRect(standard_button_x, standard_button_y, mode_button_width, mode_button_height);
+  ctx.fillStyle = "black";
+  ctx.fillText("STD", standard_button_x + mode_button_width/2, standard_button_y + mode_button_height/2);
+
+  top_bar_buttons = {
+    reset_score: [reset_score_button_x, reset_score_button_y, reset_score_button_width, reset_score_button_height],
+    standard: [standard_button_x, standard_button_y, mode_button_width, mode_button_height],
+    wide: [wide_button_x, wide_button_y, mode_button_width, mode_button_height]
+  };
+}
+
+function draw_bottom_bar() {
+  ctx.fillStyle = "rgb(50,50,50)";
+  ctx.fillRect(0, SCREEN_HEIGHT - BOTTOM_BAR_HEIGHT, SCREEN_WIDTH, BOTTOM_BAR_HEIGHT);
+
+  let button_width = 140;
+  let button_height = 40;
+  let button_x = (SCREEN_WIDTH - button_width)/2;
+  let button_y = SCREEN_HEIGHT - BOTTOM_BAR_HEIGHT + (BOTTOM_BAR_HEIGHT - button_height)/2;
+
+  ctx.fillStyle = "rgb(200,200,200)";
+  ctx.fillRect(button_x, button_y, button_width, button_height);
+  ctx.fillStyle = "black";
+  ctx.font = "18px sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText("Reset [ESC]", button_x + button_width/2, button_y + button_height/2);
+
+  reset_button_rect = [button_x, button_y, button_width, button_height];
+}
+
+function draw_grid() {
+  ctx.fillStyle = "black";
+  ctx.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+
+  draw_top_bar();
+
+  let grid_start_y = TOP_BAR_HEIGHT;
+
+  for (let r = 0; r < GRID_ROWS; r++) {
+    for (let c = 0; c < GRID_COLS; c++) {
+      let x = c * CELL_SIZE;
+      let y = grid_start_y + r * CELL_SIZE;
+      let cell_value = grid[r][c];
+
+      let target_size = get_target_size(r, c, hovered_cell);
+      let current_size = cell_states[`${r},${c}`].current_size;
+      let new_size = current_size + animation_speed * (target_size - current_size);
+      cell_states[`${r},${c}`].current_size = new_size;
+
+      // Highlight target if clicked
+      if (clicked && score !== null && r === target_row && c === target_col) {
+        ctx.fillStyle = "rgb(0,255,0)";
+      } else {
+        ctx.fillStyle = "white";
+      }
+      ctx.fillRect(x, y, CELL_SIZE, CELL_SIZE);
+
+      ctx.fillStyle = "black";
+      ctx.font = `${Math.round(new_size)}px sans-serif`;
+      ctx.textBaseline = "middle";
+      ctx.textAlign = "center";
+      ctx.fillText(String(cell_value), x + CELL_SIZE/2, y + CELL_SIZE/2);
+    }
+  }
+
+  draw_bottom_bar();
+
+  // If clicked, show result
+  if (clicked && score !== null) {
+    let msg = `Target: (${target_row},${target_col}) Value: ${target_value} | Your Score: ${score}`;
+    ctx.font = "24px sans-serif";
+    ctx.fillStyle = "white";
+    let textWidth = ctx.measureText(msg).width;
+    let rectWidth = textWidth + 40;
+    let rectHeight = 40;
+    let cx = SCREEN_WIDTH/2;
+    let cy = SCREEN_HEIGHT/2;
+    ctx.fillStyle = "black";
+    ctx.fillRect(cx - rectWidth/2, cy - rectHeight/2, rectWidth, rectHeight);
+    ctx.fillStyle = "white";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(msg, cx, cy);
+  }
+}
+
+function loop() {
+  draw_grid();
+  requestAnimationFrame(loop);
+}
+loop();
+
+// Event Handlers
+canvas.addEventListener('mousemove', (e) => {
+  if (clicked) return;
+  let rect = canvas.getBoundingClientRect();
+  let mx = e.clientX - rect.left;
+  let my = e.clientY - rect.top;
+
+  let grid_start_y = TOP_BAR_HEIGHT;
+  let col = Math.floor(mx / CELL_SIZE);
+  let row = Math.floor((my - grid_start_y) / CELL_SIZE);
+
+  if (row >= 0 && row < GRID_ROWS && col >= 0 && col < GRID_COLS) {
+    hovered_cell = [row, col];
+  } else {
+    hovered_cell = null;
+  }
+});
+
+canvas.addEventListener('mousedown', (e) => {
+  if (e.button !== 0) return; // Only left click
+  let rect = canvas.getBoundingClientRect();
+  let mx = e.clientX - rect.left;
+  let my = e.clientY - rect.top;
+
+  // Check reset round button
+  if (reset_button_rect) {
+    let [bx, by, bw, bh] = reset_button_rect;
+    if (mx >= bx && mx <= bx + bw && my >= by && my <= by + bh) {
+      // Reset round
+      initRound();
+      return;
+    }
+  }
+
+  // Check top bar buttons
+  if (top_bar_buttons) {
+    let [rbx, rby, rbw, rbh] = top_bar_buttons.reset_score;
+    if (mx >= rbx && mx <= rbx + rbw && my >= rby && my <= rby + rbh) {
+      total_score = 0;
+      return;
+    }
+
+    let [sbx, sby, sbw, sbh] = top_bar_buttons.standard;
+    if (mx >= sbx && mx <= sbx + sbw && my >= sby && my <= sby + sbh) {
+      // Switch to standard 10x10
+      GRID_COLS = 10;
+      let dims = calcScreenDimensions(GRID_COLS);
+      SCREEN_WIDTH = dims.width;
+      SCREEN_HEIGHT = dims.height;
+      canvas.width = SCREEN_WIDTH;
+      canvas.height = SCREEN_HEIGHT;
+      initRound();
+      return;
+    }
+
+    let [wbx, wby, wbw, wbh] = top_bar_buttons.wide;
+    if (mx >= wbx && mx <= wbx + wbw && my >= wby && my <= wby + wbh) {
+      // Switch to wide 10x20
+      GRID_COLS = 20;
+      let dims = calcScreenDimensions(GRID_COLS);
+      SCREEN_WIDTH = dims.width;
+      SCREEN_HEIGHT = dims.height;
+      canvas.width = SCREEN_WIDTH;
+      canvas.height = SCREEN_HEIGHT;
+      initRound();
+      return;
+    }
+  }
+
+  // If not clicked yet, attempt guess
+  if (!clicked) {
+    let grid_start_y = TOP_BAR_HEIGHT;
+    let col = Math.floor(mx / CELL_SIZE);
+    let row = Math.floor((my - grid_start_y) / CELL_SIZE);
+    if (row >= 0 && row < GRID_ROWS && col >= 0 && col < GRID_COLS) {
+      score = is_adjacent_or_same(row, col, target_row, target_col);
+      total_score += score;
+      clicked = true;
+    }
+  }
+});
+
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    // Reset round
+    initRound();
+  }
+});
+
+</script>
+</body>
+</html>
